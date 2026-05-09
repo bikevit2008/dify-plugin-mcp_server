@@ -103,8 +103,8 @@ def _get_or_create_handler(settings: Mapping, session_storage) -> MCPHandler:
     if cache_key not in _handlers:
         tools = _validate_and_parse_tools(settings)
 
-        def tool_invoker(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-            """Invoke a Dify app as an MCP tool."""
+        def tool_invoker(tool_name: str, arguments: dict[str, Any]):
+            """Invoke a Dify app as an MCP tool. Returns generator for streaming, dict for blocking."""
             tool_config = None
             for t in tools:
                 if t.get("name") == tool_name:
@@ -125,18 +125,47 @@ def _get_or_create_handler(settings: Mapping, session_storage) -> MCPHandler:
                     app_id=target_app_id,
                     query=arguments.get("query", arguments.get("input_for_search", "")),
                     inputs=arguments,
-                    response_mode="blocking",
+                    response_mode="streaming",
                 )
-                final_text = result.get("answer", "")
+                # Chat streaming yields SSE events from Dify
+                final_text = ""
+                for event in result:
+                    if isinstance(event, dict):
+                        data = event.get("data", event)
+                        if isinstance(data, dict):
+                            chunk_text = data.get("answer", data.get("text", ""))
+                            final_text += chunk_text
+                            yield {"type": "progress", "text": chunk_text}
+                        elif isinstance(data, str):
+                            final_text += data
+                            yield {"type": "progress", "text": data}
+                    elif isinstance(event, str):
+                        final_text += event
+                        yield {"type": "progress", "text": event}
+                yield {"type": "result", "content": [{"type": "text", "text": final_text}], "isError": False}
             else:
                 result = session_storage.session.app.workflow.invoke(
                     app_id=target_app_id,
                     inputs=arguments,
-                    response_mode="blocking",
+                    response_mode="streaming",
                 )
-                outputs = result.get("data", {}).get("outputs", {})
+                # Workflow streaming yields events with data chunks
+                final_outputs = {}
+                for event in result:
+                    if isinstance(event, dict):
+                        event_type = event.get("event", "")
+                        data = event.get("data", event.get("outputs", {}))
+                        if event_type in ("workflow_finished", "node_finished"):
+                            final_outputs = data if isinstance(data, dict) else {}
+                        # Progress: yield text preview of what's happening
+                        if event_type:
+                            yield {"type": "progress", "text": f"[{event_type}] processing..."}
+                    elif isinstance(event, str):
+                        yield {"type": "progress", "text": event}
+
+                # Build final result from outputs
                 text_parts = []
-                for v in outputs.values():
+                for v in final_outputs.values():
                     if isinstance(v, str):
                         text_parts.append(v)
                     elif isinstance(v, (dict, list)):
@@ -144,11 +173,7 @@ def _get_or_create_handler(settings: Mapping, session_storage) -> MCPHandler:
                     else:
                         text_parts.append(str(v))
                 final_text = "\n".join(text_parts)
-
-            return {
-                "content": [{"type": "text", "text": final_text}],
-                "isError": False,
-            }
+                yield {"type": "result", "content": [{"type": "text", "text": final_text}], "isError": False}
 
         session_ttl = int(settings.get("session-ttl", "30") or "30") * 60  # Convert minutes to seconds
         rate_limit_val = int(settings.get("rate-limit", "0") or "0")
@@ -233,7 +258,7 @@ class StreamableHTTPEndpoint(Endpoint):
         response, new_session_id, extra_headers = handler.handle_request(body, session_id)
 
         # Build response headers
-        response_headers: dict[str, str] = {"Content-Type": "application/json"}
+        response_headers: dict[str, str] = {}
         response_headers.update(extra_headers)
 
         active_sid = new_session_id or session_id
@@ -243,6 +268,25 @@ class StreamableHTTPEndpoint(Endpoint):
             session = handler.get_session(active_sid)
             if session:
                 response_headers["MCP-Protocol-Version"] = session.protocol_version
+
+        # If response is a generator → SSE streaming (tools/call with progress)
+        if hasattr(response, '__iter__') and not isinstance(response, (dict, str, JSONRPCResponse)):
+            def sse_stream():
+                try:
+                    # Send initial endpoint event with session ID
+                    yield f"event: endpoint\ndata: {json.dumps({'sessionId': active_sid})}\n\n"
+                    for chunk in response:
+                        yield chunk
+                except GeneratorExit:
+                    logger.info("SSE stream disconnected by client")
+            response_headers["Content-Type"] = "text/event-stream"
+            response_headers["Cache-Control"] = "no-cache"
+            response_headers["Connection"] = "keep-alive"
+            response_headers["X-Accel-Buffering"] = "no"
+            return Response(sse_stream(), status=200, content_type="text/event-stream", headers=response_headers)
+
+        # Standard JSON response
+        response_headers["Content-Type"] = "application/json"
 
         # Notifications: return 202 with no body per MCP spec
         method = body.get("method", "")

@@ -265,7 +265,8 @@ class MCPHandler:
             },
         )
 
-    def _handle_tools_call(self, session: MCPSession, req: JSONRPCRequest) -> JSONRPCResponse:
+    def _handle_tools_call(self, session: MCPSession, req: JSONRPCRequest):
+        """Returns generator yielding SSE-formatted strings for streaming, or JSONRPCResponse for errors."""
         tool_name = req.params.get("name", "")
         arguments = req.params.get("arguments", {})
 
@@ -284,25 +285,65 @@ class MCPHandler:
             )
 
         try:
-            result = self.tool_invoker(tool_name, arguments)
-            return JSONRPCResponse(
-                id=req.id,
-                result={
-                    "content": result.get("content", []),
-                    "isError": result.get("isError", False),
-                },
-            )
+            invoker_result = self.tool_invoker(tool_name, arguments)
         except ValueError as e:
-            return JSONRPCResponse(
-                id=req.id,
-                error={"code": INVALID_PARAMS, "message": str(e)},
-            )
+            return JSONRPCResponse(id=req.id, error={"code": INVALID_PARAMS, "message": str(e)})
         except Exception:
             logger.exception(f"Tool call failed: {tool_name}")
-            return JSONRPCResponse(
-                id=req.id,
-                error={"code": INTERNAL_ERROR, "message": "Internal tool execution error"},
-            )
+            return JSONRPCResponse(id=req.id, error={"code": INTERNAL_ERROR, "message": "Internal tool execution error"})
+
+        # If tool_invoker returned a generator, stream SSE events
+        if hasattr(invoker_result, '__iter__') and not isinstance(invoker_result, dict):
+            return self._stream_tool_response(req.id, invoker_result)
+
+        # Legacy blocking response
+        return JSONRPCResponse(
+            id=req.id,
+            result={
+                "content": invoker_result.get("content", []),
+                "isError": invoker_result.get("isError", False),
+            },
+        )
+
+    def _stream_tool_response(self, request_id: int | str | None, events):
+        """Convert tool invoker events into SSE-formatted strings."""
+        progress_token = f"progress_{request_id}"
+        total_progress = 0
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            event_type = event.get("type", "")
+            if event_type == "progress":
+                total_progress += 1
+                notification = {
+                    "jsonrpc": "2.0",
+                    "method": "notifications/progress",
+                    "params": {
+                        "progressToken": progress_token,
+                        "progress": total_progress,
+                        "total": None,
+                        "message": event.get("text", "")[:200],
+                    },
+                }
+                yield f"event: progress\ndata: {json.dumps(notification)}\n\n"
+            elif event_type == "result":
+                response = {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": {
+                        "content": event.get("content", []),
+                        "isError": event.get("isError", False),
+                    },
+                }
+                yield f"event: message\ndata: {json.dumps(response)}\n\n"
+                return
+        # If we never got a result event, send error
+        error_response = {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "error": {"code": INTERNAL_ERROR, "message": "Tool completed without result"},
+        }
+        yield f"event: message\ndata: {json.dumps(error_response)}\n\n"
 
     # ── Resource handlers ────────────────────────────────────────────
 

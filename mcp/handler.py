@@ -307,7 +307,9 @@ class MCPHandler:
         )
 
     def _stream_tool_response(self, request_id: int | str | None, events):
-        """Convert tool invoker events into SSE-formatted strings."""
+        """Convert tool invoker events into SSE-formatted strings.
+        Per MCP Streamable HTTP spec: ALL JSON-RPC messages use 'event: message'.
+        """
         progress_token = f"progress_{request_id}"
         total_progress = 0
         logger.info(f"Starting SSE stream for request {request_id}")
@@ -329,7 +331,7 @@ class MCPHandler:
                         "message": event.get("text", "")[:200],
                     },
                 }
-                yield f"event: progress\ndata: {json.dumps(notification)}\n\n"
+                yield f"event: message\ndata: {json.dumps(notification)}\n\n"
             elif event_type == "result":
                 response = {
                     "jsonrpc": "2.0",
@@ -342,7 +344,6 @@ class MCPHandler:
                 yield f"event: message\ndata: {json.dumps(response)}\n\n"
                 logger.info(f"SSE stream complete for request {request_id}")
                 return
-        # If we never got a result event, send error
         logger.error(f"SSE stream ended without result for request {request_id}")
         error_response = {
             "jsonrpc": "2.0",

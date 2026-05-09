@@ -236,7 +236,8 @@ class StreamableHTTPEndpoint(Endpoint):
         if hasattr(response, '__iter__') and not isinstance(response, (dict, str, JSONRPCResponse)):
             def sse_stream():
                 try:
-                    yield f"event: endpoint\ndata: {json.dumps({'sessionId': active_sid})}\n\n"
+                    # Per MCP spec: NO endpoint event on Streamable HTTP — that's legacy SSE only.
+                    # Just stream JSON-RPC messages as SSE events.
                     for chunk in response:
                         yield chunk
                 except GeneratorExit:

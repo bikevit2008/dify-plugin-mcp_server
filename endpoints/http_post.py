@@ -144,31 +144,16 @@ def _get_or_create_handler(settings: Mapping, session_storage) -> MCPHandler:
                         yield {"type": "progress", "text": event}
                 yield {"type": "result", "content": [{"type": "text", "text": final_text}], "isError": False}
             else:
-                # Workflow streaming — yield immediate progress, then stream events
-                yield {"type": "progress", "text": f"Starting workflow: {tool_name}..."}
+                # Workflow: yield immediate progress, invoke blocking, yield result
+                yield {"type": "progress", "text": f"Running {tool_name}..."}
                 result = session_storage.session.app.workflow.invoke(
                     app_id=target_app_id,
                     inputs=arguments,
-                    response_mode="streaming",
+                    response_mode="blocking",
                 )
-                final_outputs = {}
-                event_count = 0
-                for event in result:
-                    event_count += 1
-                    if isinstance(event, dict):
-                        event_type = event.get("event", "")
-                        data = event.get("data", event.get("outputs", {}))
-                        if event_type in ("workflow_finished", "node_finished"):
-                            final_outputs = data if isinstance(data, dict) else {}
-                        if event_type:
-                            yield {"type": "progress", "text": f"[{event_type}] ..."}
-                    elif isinstance(event, str):
-                        yield {"type": "progress", "text": event[:200]}
-                if event_count == 0:
-                    yield {"type": "progress", "text": "Workflow returned no streaming events, waiting..."}
-
+                outputs = result.get("data", {}).get("outputs", {})
                 text_parts = []
-                for v in final_outputs.values():
+                for v in outputs.values():
                     if isinstance(v, str):
                         text_parts.append(v)
                     elif isinstance(v, (dict, list)):

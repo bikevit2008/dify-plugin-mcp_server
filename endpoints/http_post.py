@@ -1,7 +1,7 @@
 """
 Streamable HTTP MCP endpoint — handles POST /mcp.
 
-Full MCP protocol support with thread-safety, auth, and validation.
+Full MCP protocol support with thread-safety, auth, validation, and streaming.
 """
 from __future__ import annotations
 
@@ -27,12 +27,9 @@ _handlers: dict[str, MCPHandler] = {}
 
 def _validate_and_parse_tools(settings: Mapping) -> list[dict[str, Any]]:
     """Parse and validate tool configurations from settings.
-    
-    Priority: custom JSON override > simple fields > empty.
-    """
+    Priority: custom JSON override > simple fields > empty."""
     tools: list[dict[str, Any]] = []
 
-    # Custom JSON override (takes priority over simple fields)
     legacy_schema = settings.get("app-input-schema")
     if legacy_schema:
         try:
@@ -43,32 +40,22 @@ def _validate_and_parse_tools(settings: Mapping) -> list[dict[str, Any]]:
                 parsed["_app_id"] = settings.get("app", {}).get("app_id")
                 parsed["_app_type"] = settings.get("app-type", "workflow")
                 tools.append(parsed)
-                return tools  # Custom schema overrides simple fields entirely
+                return tools
         except json.JSONDecodeError as e:
             logger.error(f"Invalid app-input-schema JSON: {e}")
 
-    # Auto-generate from simple fields
     tool_name = (settings.get("tool-name") or "").strip()
     if tool_name:
         tool_title = (settings.get("tool-title") or tool_name).strip()
         tool_description = (settings.get("tool-description") or "").strip()
         app_id = settings.get("app", {}).get("app_id")
         app_type = settings.get("app-type", "workflow")
+        tools.append({
+            "name": tool_name, "title": tool_title, "description": tool_description,
+            "inputSchema": {"type": "object", "properties": {}},
+            "_app_id": app_id, "_app_type": app_type,
+        })
 
-        tool = {
-            "name": tool_name,
-            "title": tool_title,
-            "description": tool_description,
-            "inputSchema": {
-                "type": "object",
-                "properties": {},
-            },
-            "_app_id": app_id,
-            "_app_type": app_type,
-        }
-        tools.append(tool)
-
-    # Multi-tool format
     tools_json = settings.get("tools-json")
     if tools_json:
         try:
@@ -78,11 +65,8 @@ def _validate_and_parse_tools(settings: Mapping) -> list[dict[str, Any]]:
                     if not isinstance(entry, dict):
                         logger.error(f"tools-json[{i}] must be an object, got {type(entry).__name__}")
                         continue
-                    if "name" not in entry:
-                        logger.error(f"tools-json[{i}] missing required field 'name'")
-                        continue
-                    if "inputSchema" not in entry:
-                        logger.error(f"tools-json[{i}] missing required field 'inputSchema'")
+                    if "name" not in entry or "inputSchema" not in entry:
+                        logger.error(f"tools-json[{i}] missing required field")
                         continue
                     tools.append(entry)
             else:
@@ -93,8 +77,8 @@ def _validate_and_parse_tools(settings: Mapping) -> list[dict[str, Any]]:
     return tools
 
 
-def _get_or_create_handler(settings: Mapping, session_storage) -> MCPHandler:
-    """Get or create a thread-safe MCPHandler for this endpoint config."""
+def _get_or_create_handler(settings: Mapping) -> MCPHandler:
+    """Get or create a thread-safe MCPHandler. Does NOT capture session."""
     app_id = settings.get("app", {}).get("app_id", "default")
     tools_json_hash = hash(settings.get("tools-json", "") or "")
     legacy_hash = hash(settings.get("app-input-schema", "") or "")
@@ -102,79 +86,14 @@ def _get_or_create_handler(settings: Mapping, session_storage) -> MCPHandler:
 
     if cache_key not in _handlers:
         tools = _validate_and_parse_tools(settings)
-
-        def tool_invoker(tool_name: str, arguments: dict[str, Any]):
-            """Invoke a Dify app as an MCP tool. Returns generator for streaming, dict for blocking."""
-            tool_config = None
-            for t in tools:
-                if t.get("name") == tool_name:
-                    tool_config = t
-                    break
-
-            if not tool_config:
-                raise ValueError(f"Unknown tool: {tool_name}")
-
-            target_app_id = tool_config.get("_app_id")
-            target_app_type = tool_config.get("_app_type", "workflow")
-
-            if not target_app_id:
-                raise ValueError(f"No app_id configured for tool: {tool_name}")
-
-            if target_app_type == "chat":
-                result = session_storage.session.app.chat.invoke(
-                    app_id=target_app_id,
-                    query=arguments.get("query", arguments.get("input_for_search", "")),
-                    inputs=arguments,
-                    response_mode="streaming",
-                )
-                # Chat streaming yields SSE events from Dify
-                final_text = ""
-                for event in result:
-                    if isinstance(event, dict):
-                        data = event.get("data", event)
-                        if isinstance(data, dict):
-                            chunk_text = data.get("answer", data.get("text", ""))
-                            final_text += chunk_text
-                            yield {"type": "progress", "text": chunk_text}
-                        elif isinstance(data, str):
-                            final_text += data
-                            yield {"type": "progress", "text": data}
-                    elif isinstance(event, str):
-                        final_text += event
-                        yield {"type": "progress", "text": event}
-                yield {"type": "result", "content": [{"type": "text", "text": final_text}], "isError": False}
-            else:
-                # Workflow: yield immediate progress, invoke blocking, yield result
-                yield {"type": "progress", "text": f"Running {tool_name}..."}
-                result = session_storage.session.app.workflow.invoke(
-                    app_id=target_app_id,
-                    inputs=arguments,
-                    response_mode="blocking",
-                )
-                outputs = result.get("data", {}).get("outputs", {})
-                text_parts = []
-                for v in outputs.values():
-                    if isinstance(v, str):
-                        text_parts.append(v)
-                    elif isinstance(v, (dict, list)):
-                        text_parts.append(json.dumps(v, ensure_ascii=False))
-                    else:
-                        text_parts.append(str(v))
-                final_text = "\n".join(text_parts) if text_parts else "(empty output)"
-                yield {"type": "result", "content": [{"type": "text", "text": final_text}], "isError": False}
-
-        session_ttl = int(settings.get("session-ttl", "30") or "30") * 60  # Convert minutes to seconds
+        session_ttl = int(settings.get("session-ttl", "30") or "30") * 60
         rate_limit_val = int(settings.get("rate-limit", "0") or "0")
 
         _handlers[cache_key] = MCPHandler(
-            server_name="Dify MCP Server",
-            server_version="1.0.0",
-            session_ttl=session_ttl,
-            tools=tools,
-            tool_invoker=tool_invoker,
+            server_name="Dify MCP Server", server_version="1.0.0",
+            session_ttl=session_ttl, tools=tools, tool_invoker=None,
             auth_token=settings.get("auth-token"),
         )
-        # Attach rate limiter to handler
         _handlers[cache_key].rate_limiter = RateLimiter(
             rate=rate_limit_val / 60.0 if rate_limit_val > 0 else 0,
             burst=rate_limit_val if rate_limit_val > 0 else 0,
@@ -183,21 +102,80 @@ def _get_or_create_handler(settings: Mapping, session_storage) -> MCPHandler:
     return _handlers[cache_key]
 
 
+def _make_tool_invoker(handler: MCPHandler, session_storage):
+    """Create a fresh tool_invoker bound to the CURRENT request session.
+    Called on EVERY request to avoid stale session closures (CRITICAL FIX)."""
+    tools = handler._raw_tools
+
+    def tool_invoker(tool_name: str, arguments: dict[str, Any]):
+        tool_config = None
+        for t in tools:
+            if t.get("name") == tool_name:
+                tool_config = t
+                break
+        if not tool_config:
+            raise ValueError(f"Unknown tool: {tool_name}")
+
+        target_app_id = tool_config.get("_app_id")
+        target_app_type = tool_config.get("_app_type", "workflow")
+        if not target_app_id:
+            raise ValueError(f"No app_id configured for tool: {tool_name}")
+
+        if target_app_type == "chat":
+            result = session_storage.session.app.chat.invoke(
+                app_id=target_app_id,
+                query=arguments.get("query", arguments.get("input_for_search", "")),
+                inputs=arguments, response_mode="streaming",
+            )
+            final_text = ""
+            for event in result:
+                if isinstance(event, dict):
+                    data = event.get("data", event)
+                    if isinstance(data, dict):
+                        chunk_text = data.get("answer", data.get("text", ""))
+                        final_text += chunk_text
+                        yield {"type": "progress", "text": chunk_text}
+                    elif isinstance(data, str):
+                        final_text += data
+                        yield {"type": "progress", "text": data}
+                elif isinstance(event, str):
+                    final_text += event
+                    yield {"type": "progress", "text": event}
+            yield {"type": "result", "content": [{"type": "text", "text": final_text}], "isError": False}
+        else:
+            yield {"type": "progress", "text": f"Running {tool_name}..."}
+            result = session_storage.session.app.workflow.invoke(
+                app_id=target_app_id, inputs=arguments, response_mode="blocking",
+            )
+            outputs = result.get("data", {}).get("outputs", {})
+            text_parts = []
+            for v in outputs.values():
+                if isinstance(v, str):
+                    text_parts.append(v)
+                elif isinstance(v, (dict, list)):
+                    text_parts.append(json.dumps(v, ensure_ascii=False))
+                else:
+                    text_parts.append(str(v))
+            final_text = "\n".join(text_parts) if text_parts else "(empty output)"
+            yield {"type": "result", "content": [{"type": "text", "text": final_text}], "isError": False}
+
+    return tool_invoker
+
+
 class StreamableHTTPEndpoint(Endpoint):
     """Streamable HTTP MCP endpoint — POST /mcp."""
 
     def _invoke(self, r: Request, values: Mapping, settings: Mapping) -> Response:
         logger.info(f"MCP POST request from {r.remote_addr}")
 
-        handler = _get_or_create_handler(settings, self)
+        handler = _get_or_create_handler(settings)
+        handler.tool_invoker = _make_tool_invoker(handler, self)
 
         # Rate limit check
         if hasattr(handler, 'rate_limiter') and not handler.rate_limiter.acquire():
             return Response(
                 json.dumps({"jsonrpc": "2.0", "id": None, "error": {"code": -32000, "message": "Rate limit exceeded. Retry later."}}),
-                status=429,
-                content_type="application/json",
-                headers={"Retry-After": "1"},
+                status=429, content_type="application/json", headers={"Retry-After": "1"},
             )
 
         # Body size check
@@ -205,50 +183,42 @@ class StreamableHTTPEndpoint(Endpoint):
         if content_length and content_length > MAX_BODY_SIZE:
             return Response(
                 json.dumps({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Request body too large"}}),
-                status=413,
-                content_type="application/json",
+                status=413, content_type="application/json",
             )
 
-        # Content-Type validation (MCP spec requires application/json)
+        # Content-Type validation
         content_type = r.headers.get("Content-Type", "")
         if r.method == "POST" and content_type and not content_type.startswith("application/json"):
             return Response(
                 json.dumps({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Content-Type must be application/json"}}),
-                status=415,
-                content_type="application/json",
+                status=415, content_type="application/json",
             )
 
-        # Parse body (needed for auth id)
+        # Parse body
         try:
             body = r.get_json(force=True, silent=False) or {}
         except Exception:
             return Response(
                 json.dumps({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}}),
-                status=400,
-                content_type="application/json",
+                status=400, content_type="application/json",
             )
 
-        # Auth check WITH request id from parsed body
+        # Auth check
         request_id = body.get("id") if isinstance(body, dict) else None
         auth_header = r.headers.get("Authorization")
         auth_error = handler.check_auth(auth_header, request_id=request_id)
         if auth_error:
-            return Response(
-                json.dumps(auth_error.to_dict()),
-                status=401,
-                content_type="application/json",
-            )
+            return Response(json.dumps(auth_error.to_dict()), status=401, content_type="application/json")
 
-        # Extract session ID from header
+        # Session
         session_id = r.headers.get("Mcp-Session-Id") or r.headers.get("mcp-session-id")
 
-        # Handle the request
+        # Handle request
         response, new_session_id, extra_headers = handler.handle_request(body, session_id)
 
-        # Build response headers
+        # Build headers
         response_headers: dict[str, str] = {}
         response_headers.update(extra_headers)
-
         active_sid = new_session_id or session_id
         if new_session_id and new_session_id != session_id:
             response_headers["Mcp-Session-Id"] = new_session_id
@@ -257,11 +227,10 @@ class StreamableHTTPEndpoint(Endpoint):
             if session:
                 response_headers["MCP-Protocol-Version"] = session.protocol_version
 
-        # If response is a generator → SSE streaming (tools/call with progress)
+        # SSE streaming for generator responses
         if hasattr(response, '__iter__') and not isinstance(response, (dict, str, JSONRPCResponse)):
             def sse_stream():
                 try:
-                    # Send initial endpoint event with session ID
                     yield f"event: endpoint\ndata: {json.dumps({'sessionId': active_sid})}\n\n"
                     for chunk in response:
                         yield chunk
@@ -273,29 +242,19 @@ class StreamableHTTPEndpoint(Endpoint):
             response_headers["X-Accel-Buffering"] = "no"
             return Response(sse_stream(), status=200, content_type="text/event-stream", headers=response_headers)
 
-        # Standard JSON response
         response_headers["Content-Type"] = "application/json"
 
-        # Notifications: return 202 with no body per MCP spec
+        # Notifications
         method = body.get("method", "")
-        is_notification = method.startswith("notifications/") or body.get("id") is None
-        if is_notification:
+        if method.startswith("notifications/") or body.get("id") is None:
             return Response("", status=202, content_type="application/json", headers=response_headers)
 
-        # Map error codes to HTTP status
+        # Status code
         status_code = 200
         if response.error:
             code = response.error.get("code")
-            if code in (-32700, -32600, -32602):
-                status_code = 400
-            elif code == -32002:
-                status_code = 400
-            elif code == -32601:
-                status_code = 404
+            if code in (-32700, -32600, -32602): status_code = 400
+            elif code == -32002: status_code = 400
+            elif code == -32601: status_code = 404
 
-        return Response(
-            json.dumps(response.to_dict()),
-            status=status_code,
-            content_type="application/json",
-            headers=response_headers,
-        )
+        return Response(json.dumps(response.to_dict()), status=status_code, content_type="application/json", headers=response_headers)

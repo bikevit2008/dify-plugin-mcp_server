@@ -38,8 +38,9 @@ class StreamableHTTPGetEndpoint(Endpoint):
     def _invoke(self, r: Request, values: Mapping, settings: Mapping) -> Response:
         logger.info(f"MCP GET (SSE) request from {r.remote_addr}")
 
-        from .http_post import _get_or_create_handler
-        handler = _get_or_create_handler(settings, self)
+        from .http_post import _get_or_create_handler, _make_tool_invoker
+        handler = _get_or_create_handler(settings)
+        handler.tool_invoker = _make_tool_invoker(handler, self)
 
         auth_header = r.headers.get("Authorization")
         auth_error = handler.check_auth(auth_header)

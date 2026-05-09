@@ -32,8 +32,9 @@ class MessageEndpoint(Endpoint):
         if auth_error:
             return auth_error
 
-        from .http_post import _get_or_create_handler
-        handler = _get_or_create_handler(settings, self)
+        from .http_post import _get_or_create_handler, _make_tool_invoker
+        handler = _get_or_create_handler(settings)
+        handler.tool_invoker = _make_tool_invoker(handler, self)
 
         sse_session_id = r.args.get("session_id", "")
 

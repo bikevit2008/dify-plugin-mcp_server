@@ -46,8 +46,8 @@ settings:
         value: chat
     default: workflow
     help:
-      en_US: "Workflow" for most cases. Use "Chat" only if your app is a chat-type application.
-      ru_RU: "Воркфлоу" для большинства случаев. "Чат" — только для чат-приложений.
+      en_US: '"Workflow" for most cases. Use "Chat" only if your app is a chat-type application.'
+      ru_RU: '"Воркфлоу" для большинства случаев. "Чат" — только для чат-приложений.'
 
   - name: tool-name
     type: text-input
@@ -153,8 +153,8 @@ settings:
       en_US: Access Password (optional)
       ru_RU: Пароль доступа (опционально)
     placeholder:
-      en_US: Set a password. Clients must send Authorization: Bearer <password>
-      ru_RU: Задайте пароль. Клиенты должны отправлять Authorization: Bearer <пароль>
+      en_US: 'Set a password. Clients must send Authorization: Bearer <password>'
+      ru_RU: 'Задайте пароль. Клиенты должны отправлять Authorization: Bearer <пароль>'
 
   - name: session-ttl
     type: text-input

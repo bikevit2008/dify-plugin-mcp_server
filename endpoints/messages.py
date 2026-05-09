@@ -1,6 +1,16 @@
+"""
+Legacy SSE Messages endpoint — handles POST /messages/.
+
+Receives JSON-RPC requests for SSE-based sessions.
+Delegates to the shared MCPHandler for protocol logic.
+Bridges SSE transport session IDs with MCPHandler session IDs.
+"""
+from __future__ import annotations
+
 import json
-from typing import Mapping
 import logging
+from typing import Mapping
+
 from werkzeug import Request, Response
 from dify_plugin import Endpoint
 from dify_plugin.config.logger_format import plugin_logger_handler
@@ -13,109 +23,40 @@ logger.addHandler(plugin_logger_handler)
 
 
 class MessageEndpoint(Endpoint):
+    """Legacy SSE messages endpoint."""
+
     def _invoke(self, r: Request, values: Mapping, settings: Mapping) -> Response:
-        """
-        Invokes the endpoint with the given request.
-        """
-        logger.info(f"MessageEndpoint request headers: {r.headers}")
-        logger.info(f"MessageEndpoint request json: {r.json}")
+        logger.info(f"Legacy messages request from {r.remote_addr}")
 
         auth_error = validate_bearer_token(r, settings)
         if auth_error:
             return auth_error
-        
-        app_id = settings.get("app").get("app_id")
-        try:
-            tool = json.loads(settings.get("app-input-schema"))
-        except json.JSONDecodeError:
-            logger.error(f'Invalid app-input-schema: {settings.get("app-input-schema")}')
-            raise ValueError("Invalid app-input-schema")
 
-        session_id = r.args.get("session_id")
-        data = r.json
+        from .http_post import _get_or_create_handler
+        handler = _get_or_create_handler(settings, self)
 
-        if data.get("method") == "initialize":
-            response = {
-                "jsonrpc": "2.0",
-                "id": data.get("id"),
-                "result": {
-                    "protocolVersion": "2024-11-05",
-                    "capabilities": {
-                        "experimental": {},
-                        "prompts": {"listChanged": False},
-                        "resources": {"subscribe": False, "listChanged": False},
-                        "tools": {"listChanged": False},
-                    },
-                    "serverInfo": {"name": "Dify", "version": "1.3.0"},
-                },
-            }
+        sse_session_id = r.args.get("session_id", "")
 
-        elif data.get("method") == "ping":
-            response = {
-                "jsonrpc": "2.0",
-                "id": data.get("id"),
-                "result": {},
-            }
+        # Resolve MCP session from SSE session mapping
+        mcp_session_id = None
+        mapping_key = f"_mcp_sid_{sse_session_id}"
+        if self.session.storage.exist(mapping_key):
+            mcp_session_id = self.session.storage.get(mapping_key)
+            mcp_session_id = mcp_session_id.decode("utf-8") if isinstance(mcp_session_id, bytes) else str(mcp_session_id)
 
-        elif data.get("method") == "notifications/initialized":
-            return Response("", status=202, content_type="application/json")
+        body = r.get_json(force=True, silent=False) or {}
 
-        elif data.get("method") == "tools/list":
-            response = {
-                "jsonrpc": "2.0",
-                "id": data.get("id"),
-                "result": {"tools": [tool]},
-            }
+        response, new_session_id, extra_headers = handler.handle_request(body, mcp_session_id or None)
 
-        elif data.get("method") == "tools/call":
-            tool_name = data.get("params", {}).get("name")
-            arguments = data.get("params", {}).get("arguments", {})
+        # If initialize created a new MCP session, store the mapping
+        if new_session_id and new_session_id != mcp_session_id:
+            self.session.storage.set(mapping_key, new_session_id.encode("utf-8"))
 
-            try:
-                if tool_name == tool.get("name"):
-                    if settings.get("app-type") == "chat":
-                        result = self.session.app.chat.invoke(
-                            app_id=app_id,
-                            query=arguments.get("query", "empty query"),
-                            inputs=arguments,
-                            response_mode="blocking",
-                        )
-                    else:
-                        result = self.session.app.workflow.invoke(
-                            app_id=app_id, inputs=arguments, response_mode="blocking"
-                        )
-                    logger.info(f"Invoke dify app result: {json.dumps(result, ensure_ascii=False)}")
-                else:
-                    raise ValueError(f"Unknown tool: {tool_name}")
+        # Store response in storage for the SSE poll loop
+        # Use the SSE session_id so the SSE endpoint can find it
+        self.session.storage.set(
+            sse_session_id,
+            json.dumps(response.to_dict()).encode("utf-8"),
+        )
 
-                if settings.get("app-type") == "chat":
-                    final_result = {"type": "text", "text": result.get("answer")}
-                else:
-                    r = [
-                        v
-                        for v in result.get("data").get("outputs", {}).values()
-                        if isinstance(v, str)
-                    ]
-                    final_result = {"type": "text", "text": "\n".join(r)}
-
-                response = {
-                    "jsonrpc": "2.0",
-                    "id": data.get("id"),
-                    "result": {"content": [final_result], "isError": False},
-                }
-            except Exception as e:
-                logger.error(f"MessageEndpoint tool call error: {e}")
-                response = {
-                    "jsonrpc": "2.0",
-                    "id": data.get("id"),
-                    "error": {"code": -32000, "message": str(e)},
-                }
-        else:
-            response = {
-                "jsonrpc": "2.0",
-                "id": data.get("id"),
-                "error": {"code": -32001, "message": "unsupported method"},
-            }
-
-        self.session.storage.set(session_id, json.dumps(response).encode())
         return Response("", status=202, content_type="application/json")

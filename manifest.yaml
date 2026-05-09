@@ -1,12 +1,14 @@
-version: 0.0.4
+version: 1.0.0
 type: plugin
 author: hjlarry
 name: mcp-server
 label:
-  en_US: MCP server
+  en_US: MCP Tool Export
+  ru_RU: Экспорт как MCP-инструмент
 description:
-  en_US: make dify's workflow as a MCP server
-  zh_Hans: 使dify的工作流或对话流成为一个MCP服务器
+  en_US: Expose Dify workflows and chat apps as MCP tools. Supports multi-tool, version negotiation, SSE/Streamable HTTP, and all MCP methods. Compatible with Devin, Windsurf, Claude Code, Cursor, OpenCode, and any MCP client.
+  zh_Hans: 将Dify工作流或对话流作为MCP工具暴露。支持多工具、版本协商、SSE/Streamable HTTP及所有MCP方法。兼容Devin、Windsurf、Claude Code、Cursor、OpenCode及任何MCP客户端。
+  ru_RU: Экспорт Dify-воркфлоу и чат-приложений как MCP-инструментов. Поддержка multi-tool, версионных переговоров, SSE/Streamable HTTP и всех MCP-методов. Совместим с Devin, Windsurf, Claude Code, Cursor, OpenCode и любыми MCP-клиентами.
 icon: icon.svg
 resource:
   memory: 268435456
@@ -22,7 +24,7 @@ plugins:
   endpoints:
     - group/mcp-server.yaml
 meta:
-  version: 0.0.1
+  version: 1.0.0
   arch:
     - amd64
     - arm64

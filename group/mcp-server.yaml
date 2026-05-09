@@ -1,44 +1,183 @@
+# MCP Server Endpoint Group
+#
+# Two modes of operation:
+#
+# 1. SIMPLE MODE: Fill in the simple fields below (name, title, description).
+#    The JSON schema is auto-generated from your selected app's inputs.
+#    → One MCP endpoint = one tool. Best for most users.
+#
+# 2. ADVANCED MODE: Use the "Additional Tools (JSON)" field to add more tools,
+#    or override the auto-generated schema with custom JSON.
+#    → One MCP endpoint = many tools. For power users.
+#
+# Tool naming: lowercase_with_underscores, no spaces (e.g. web_search, get_weather).
+# Each tool name must be unique within the endpoint.
+
 settings:
+  # ── Simple mode (recommended) ──────────────────────────────────
   - name: app
     type: app-selector
     scope: all
-    required: true
+    required: false
     label:
-      en_US: App
+      en_US: Dify App
+      ru_RU: Dify-приложение
     placeholder:
-      en_US: Please select an app
-      zh_Hans: 请选择一个应用
+      en_US: Select the workflow or chat app to expose
+      ru_RU: Выберите воркфлоу или чат для экспорта
+    help:
+      en_US: Choose which Dify workflow or chat app this tool will run when called by an MCP client.
+      ru_RU: Выберите Dify-воркфлоу или чат-приложение, которое будет запускаться при вызове MCP-клиентом.
+
   - name: app-type
     type: select
-    required: true
+    required: false
     label:
       en_US: App Type
-      zh_Hans: 应用类型
+      ru_RU: Тип приложения
     options:
       - label:
-          en_US: Chat
-        value: chat
-      - label:
           en_US: Workflow
+          ru_RU: Воркфлоу
         value: workflow
+      - label:
+          en_US: Chat
+          ru_RU: Чат
+        value: chat
+    default: workflow
+    help:
+      en_US: "Workflow" for most cases. Use "Chat" only if your app is a chat-type application.
+      ru_RU: "Воркфлоу" для большинства случаев. "Чат" — только для чат-приложений.
+
+  - name: tool-name
+    type: text-input
+    required: false
+    label:
+      en_US: Tool Name
+      ru_RU: Имя инструмента
+    placeholder:
+      en_US: web_search
+      ru_RU: web_search
+    help:
+      en_US: Unique ID for your tool. Use lowercase letters and underscores only (e.g. web_search, get_weather).
+      ru_RU: Уникальный ID инструмента. Только строчные буквы и подчёркивания (напр. web_search, get_weather).
+
+  - name: tool-title
+    type: text-input
+    required: false
+    label:
+      en_US: Tool Title (display name)
+      ru_RU: Заголовок инструмента
+    placeholder:
+      en_US: Web Search
+      ru_RU: Веб-поиск
+    help:
+      en_US: Human-readable name shown in the MCP client. Can include spaces and capitals.
+      ru_RU: Человеко-читаемое название в MCP-клиенте. Можно с пробелами и заглавными буквами.
+
+  - name: tool-description
+    type: text-input
+    required: false
+    label:
+      en_US: Tool Description
+      ru_RU: Описание инструмента
+    placeholder:
+      en_US: Search the web for current information using AI-powered search
+      ru_RU: Поиск актуальной информации в интернете с помощью AI
+    help:
+      en_US: Tell the AI what this tool does and when to use it. Be specific — this affects how well the AI uses your tool.
+      ru_RU: Объясните AI, что делает инструмент и когда его использовать. Чем точнее — тем лучше AI будет его применять.
+
+  # ── Advanced: raw JSON override ────────────────────────────────
   - name: app-input-schema
     type: text-input
-    required: true
+    required: false
     label:
-      en_US: App Input Schema
-      zh_Hans: 应用输入 schema
+      en_US: Custom Schema Override (JSON, advanced)
+      ru_RU: Своя схема (JSON, для продвинутых)
     placeholder:
-      en_US: the json format of your app input schema
-      zh_Hans: 请输入应用所需输入的 json 格式
+      en_US: |
+        Leave empty to auto-generate from simple fields above.
+        Use this to override the auto-generated inputSchema with custom JSON Schema.
+      ru_RU: |
+        Оставьте пустым для автогенерации из простых полей выше.
+        Используйте для замены автогенерируемой inputSchema на свою.
+    help:
+      en_US: Optional. Override the auto-generated schema with custom parameter definitions (types, required fields, descriptions). Leave empty for simple setup.
+      ru_RU: Опционально. Замените автосхему на свою с пользовательскими параметрами. Оставьте пустым для простой настройки.
+
+  # ── Multi-tool mode ────────────────────────────────────────────
+  - name: tools-json
+    type: text-input
+    required: false
+    label:
+      en_US: Additional Tools (JSON array, advanced)
+      ru_RU: Доп. инструменты (JSON массив, продвинутый режим)
+    placeholder:
+      en_US: |
+        [
+          {
+            "name": "get_weather",
+            "title": "Get Weather",
+            "description": "Get current weather for a city",
+            "inputSchema": {
+              "type": "object",
+              "properties": { "city": {"type": "string", "description": "City name"} },
+              "required": ["city"]
+            },
+            "_app_id": "app-xxxxx",
+            "_app_type": "workflow"
+          }
+        ]
+      ru_RU: |
+        [
+          {
+            "name": "get_weather",
+            "title": "Погода",
+            "description": "Получить погоду для города",
+            "inputSchema": {
+              "type": "object",
+              "properties": { "city": {"type": "string", "description": "Название города"} },
+              "required": ["city"]
+            },
+            "_app_id": "app-xxxxx",
+            "_app_type": "workflow"
+          }
+        ]
+
+  # ── Security ───────────────────────────────────────────────────
   - name: auth-token
     type: secret-input
     required: false
     label:
-      en_US: Auth Bearer Token
-      zh_Hans: 认证Bearer token
+      en_US: Access Password (optional)
+      ru_RU: Пароль доступа (опционально)
     placeholder:
-      en_US: the auth Bearer token of your app, if not provided, the app will not validate
-      zh_Hans: 请输入应用的认证Bearer token，如果未提供，应用将不验证
+      en_US: Set a password. Clients must send Authorization: Bearer <password>
+      ru_RU: Задайте пароль. Клиенты должны отправлять Authorization: Bearer <пароль>
+
+  - name: session-ttl
+    type: text-input
+    required: false
+    label:
+      en_US: Session Timeout (minutes)
+      ru_RU: Таймаут сессии (минут)
+    default: "30"
+    placeholder:
+      en_US: "30"
+      ru_RU: "30"
+
+  - name: rate-limit
+    type: text-input
+    required: false
+    label:
+      en_US: Rate Limit (requests per minute, 0 = no limit)
+      ru_RU: Лимит запросов (в минуту, 0 = без лимита)
+    default: "0"
+    placeholder:
+      en_US: "60"
+      ru_RU: "60"
+
 endpoints:
   - endpoints/sse.yaml
   - endpoints/messages.yaml

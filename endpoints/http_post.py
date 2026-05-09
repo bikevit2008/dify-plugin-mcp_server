@@ -144,26 +144,29 @@ def _get_or_create_handler(settings: Mapping, session_storage) -> MCPHandler:
                         yield {"type": "progress", "text": event}
                 yield {"type": "result", "content": [{"type": "text", "text": final_text}], "isError": False}
             else:
+                # Workflow streaming — yield immediate progress, then stream events
+                yield {"type": "progress", "text": f"Starting workflow: {tool_name}..."}
                 result = session_storage.session.app.workflow.invoke(
                     app_id=target_app_id,
                     inputs=arguments,
                     response_mode="streaming",
                 )
-                # Workflow streaming yields events with data chunks
                 final_outputs = {}
+                event_count = 0
                 for event in result:
+                    event_count += 1
                     if isinstance(event, dict):
                         event_type = event.get("event", "")
                         data = event.get("data", event.get("outputs", {}))
                         if event_type in ("workflow_finished", "node_finished"):
                             final_outputs = data if isinstance(data, dict) else {}
-                        # Progress: yield text preview of what's happening
                         if event_type:
-                            yield {"type": "progress", "text": f"[{event_type}] processing..."}
+                            yield {"type": "progress", "text": f"[{event_type}] ..."}
                     elif isinstance(event, str):
-                        yield {"type": "progress", "text": event}
+                        yield {"type": "progress", "text": event[:200]}
+                if event_count == 0:
+                    yield {"type": "progress", "text": "Workflow returned no streaming events, waiting..."}
 
-                # Build final result from outputs
                 text_parts = []
                 for v in final_outputs.values():
                     if isinstance(v, str):
@@ -172,7 +175,7 @@ def _get_or_create_handler(settings: Mapping, session_storage) -> MCPHandler:
                         text_parts.append(json.dumps(v, ensure_ascii=False))
                     else:
                         text_parts.append(str(v))
-                final_text = "\n".join(text_parts)
+                final_text = "\n".join(text_parts) if text_parts else "(empty output)"
                 yield {"type": "result", "content": [{"type": "text", "text": final_text}], "isError": False}
 
         session_ttl = int(settings.get("session-ttl", "30") or "30") * 60  # Convert minutes to seconds

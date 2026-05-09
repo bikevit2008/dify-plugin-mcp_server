@@ -309,10 +309,13 @@ class MCPHandler:
         """Convert tool invoker events into SSE-formatted strings."""
         progress_token = f"progress_{request_id}"
         total_progress = 0
+        logger.info(f"Starting SSE stream for request {request_id}")
         for event in events:
             if not isinstance(event, dict):
+                logger.warning(f"Non-dict event in stream: {type(event)}")
                 continue
             event_type = event.get("type", "")
+            logger.debug(f"SSE event: {event_type}")
             if event_type == "progress":
                 total_progress += 1
                 notification = {
@@ -336,8 +339,10 @@ class MCPHandler:
                     },
                 }
                 yield f"event: message\ndata: {json.dumps(response)}\n\n"
+                logger.info(f"SSE stream complete for request {request_id}")
                 return
         # If we never got a result event, send error
+        logger.error(f"SSE stream ended without result for request {request_id}")
         error_response = {
             "jsonrpc": "2.0",
             "id": request_id,

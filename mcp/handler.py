@@ -132,7 +132,7 @@ class MCPHandler:
     # ── Request dispatch ─────────────────────────────────────────────
 
     def handle_request(
-        self, body: dict[str, Any], session_id: str | None = None
+        self, body: dict[str, Any], session_id: str | None = None, tool_invoker: ToolInvoker | None = None
     ) -> tuple[JSONRPCResponse, str | None, dict[str, str]]:
         """
         Handle a JSON-RPC request. Thread-safe.
@@ -196,6 +196,8 @@ class MCPHandler:
 
         handler = handlers.get(method)
         if handler:
+            if method == MCPMethod.TOOLS_CALL:
+                return handler(session, req, tool_invoker=tool_invoker), session_id, extra_headers
             return handler(session, req), session_id, extra_headers
 
         return JSONRPCResponse(
@@ -265,12 +267,11 @@ class MCPHandler:
             },
         )
 
-    def _handle_tools_call(self, session: MCPSession, req: JSONRPCRequest):
+    def _handle_tools_call(self, session: MCPSession, req: JSONRPCRequest, tool_invoker: ToolInvoker | None = None):
         """Returns generator yielding SSE-formatted strings for streaming, or JSONRPCResponse for errors."""
         tool_name = req.params.get("name", "")
         arguments = req.params.get("arguments", {})
 
-        # Validate tool exists (before checking invoker — better error message)
         known_names = {t["name"] for t in self.tools}
         if tool_name not in known_names:
             return JSONRPCResponse(
@@ -278,14 +279,14 @@ class MCPHandler:
                 error={"code": INVALID_PARAMS, "message": f"Unknown tool: {tool_name}. Available: {', '.join(sorted(known_names))}"},
             )
 
-        if not self.tool_invoker:
+        if not tool_invoker:
             return JSONRPCResponse(
                 id=req.id,
                 error={"code": INTERNAL_ERROR, "message": "No tool invoker configured"},
             )
 
         try:
-            invoker_result = self.tool_invoker(tool_name, arguments)
+            invoker_result = tool_invoker(tool_name, arguments)
         except ValueError as e:
             return JSONRPCResponse(id=req.id, error={"code": INVALID_PARAMS, "message": str(e)})
         except Exception:

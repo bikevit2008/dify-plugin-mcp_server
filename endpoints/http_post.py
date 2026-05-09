@@ -68,6 +68,11 @@ def _validate_and_parse_tools(settings: Mapping) -> list[dict[str, Any]]:
                     if "name" not in entry or "inputSchema" not in entry:
                         logger.error(f"tools-json[{i}] missing required field")
                         continue
+                    # Auto-set _app_id/_app_type from settings if not in JSON
+                    if "_app_id" not in entry:
+                        entry["_app_id"] = settings.get("app", {}).get("app_id")
+                    if "_app_type" not in entry:
+                        entry["_app_type"] = settings.get("app-type", "workflow")
                     tools.append(entry)
             else:
                 logger.error(f"tools-json must be a JSON array, got {type(parsed).__name__}")
@@ -169,7 +174,7 @@ class StreamableHTTPEndpoint(Endpoint):
         logger.info(f"MCP POST request from {r.remote_addr}")
 
         handler = _get_or_create_handler(settings)
-        handler.tool_invoker = _make_tool_invoker(handler, self)
+        tool_invoker = _make_tool_invoker(handler, self)
 
         # Rate limit check
         if hasattr(handler, 'rate_limiter') and not handler.rate_limiter.acquire():
@@ -214,7 +219,7 @@ class StreamableHTTPEndpoint(Endpoint):
         session_id = r.headers.get("Mcp-Session-Id") or r.headers.get("mcp-session-id")
 
         # Handle request
-        response, new_session_id, extra_headers = handler.handle_request(body, session_id)
+        response, new_session_id, extra_headers = handler.handle_request(body, session_id, tool_invoker=tool_invoker)
 
         # Build headers
         response_headers: dict[str, str] = {}

@@ -234,14 +234,25 @@ class StreamableHTTPEndpoint(Endpoint):
 
         # SSE streaming for generator responses
         if hasattr(response, '__iter__') and not isinstance(response, (dict, str, JSONRPCResponse)):
+            request_id = body.get("id")
             def sse_stream():
                 try:
-                    # Per MCP spec: NO endpoint event on Streamable HTTP — that's legacy SSE only.
-                    # Just stream JSON-RPC messages as SSE events.
                     for chunk in response:
                         yield chunk
                 except GeneratorExit:
                     logger.info("SSE stream disconnected by client")
+                except Exception as e:
+                    logger.exception("SSE stream crashed unexpectedly")
+                    error_msg = str(e)[:500] or "Internal stream error"
+                    err = {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "result": {
+                            "content": [{"type": "text", "text": f"Stream error: {error_msg}"}],
+                            "isError": True,
+                        },
+                    }
+                    yield f"event: message\ndata: {json.dumps(err)}\n\n"
             response_headers["Content-Type"] = "text/event-stream"
             response_headers["Cache-Control"] = "no-cache"
             response_headers["Connection"] = "keep-alive"

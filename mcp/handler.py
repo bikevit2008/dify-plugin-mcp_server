@@ -309,46 +309,66 @@ class MCPHandler:
     def _stream_tool_response(self, request_id: int | str | None, events):
         """Convert tool invoker events into SSE-formatted strings.
         Per MCP Streamable HTTP spec: ALL JSON-RPC messages use 'event: message'.
+        Catches exceptions from the tool generator and emits proper error response.
         """
         progress_token = f"progress_{request_id}"
         total_progress = 0
         logger.info(f"Starting SSE stream for request {request_id}")
-        for event in events:
-            if not isinstance(event, dict):
-                logger.warning(f"Non-dict event in stream: {type(event)}")
-                continue
-            event_type = event.get("type", "")
-            logger.debug(f"SSE event: {event_type}")
-            if event_type == "progress":
-                total_progress += 1
-                notification = {
-                    "jsonrpc": "2.0",
-                    "method": "notifications/progress",
-                    "params": {
-                        "progressToken": progress_token,
-                        "progress": total_progress,
-                        "total": None,
-                        "message": event.get("text", "")[:200],
-                    },
-                }
-                yield f"event: message\ndata: {json.dumps(notification)}\n\n"
-            elif event_type == "result":
-                response = {
-                    "jsonrpc": "2.0",
-                    "id": request_id,
-                    "result": {
-                        "content": event.get("content", []),
-                        "isError": event.get("isError", False),
-                    },
-                }
-                yield f"event: message\ndata: {json.dumps(response)}\n\n"
-                logger.info(f"SSE stream complete for request {request_id}")
-                return
+        try:
+            for event in events:
+                if not isinstance(event, dict):
+                    logger.warning(f"Non-dict event in stream: {type(event)}")
+                    continue
+                event_type = event.get("type", "")
+                logger.debug(f"SSE event: {event_type}")
+                if event_type == "progress":
+                    total_progress += 1
+                    notification = {
+                        "jsonrpc": "2.0",
+                        "method": "notifications/progress",
+                        "params": {
+                            "progressToken": progress_token,
+                            "progress": total_progress,
+                            "total": None,
+                            "message": event.get("text", "")[:200],
+                        },
+                    }
+                    yield f"event: message\ndata: {json.dumps(notification)}\n\n"
+                elif event_type == "result":
+                    response = {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "result": {
+                            "content": event.get("content", []),
+                            "isError": event.get("isError", False),
+                        },
+                    }
+                    yield f"event: message\ndata: {json.dumps(response)}\n\n"
+                    logger.info(f"SSE stream complete for request {request_id}")
+                    return
+        except Exception as e:
+            # CRITICAL: emit error response so client doesn't hang forever
+            logger.exception(f"Tool generator raised exception for request {request_id}")
+            error_msg = str(e)[:500] or "Tool execution failed"
+            error_response = {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": {
+                    "content": [{"type": "text", "text": f"Error: {error_msg}"}],
+                    "isError": True,
+                },
+            }
+            yield f"event: message\ndata: {json.dumps(error_response)}\n\n"
+            return
+        # Generator exhausted without 'result' event
         logger.error(f"SSE stream ended without result for request {request_id}")
         error_response = {
             "jsonrpc": "2.0",
             "id": request_id,
-            "error": {"code": INTERNAL_ERROR, "message": "Tool completed without result"},
+            "result": {
+                "content": [{"type": "text", "text": "Tool completed without producing a result"}],
+                "isError": True,
+            },
         }
         yield f"event: message\ndata: {json.dumps(error_response)}\n\n"
 
